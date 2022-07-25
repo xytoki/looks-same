@@ -1,5 +1,44 @@
 # Changelog
 
+All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
+
+## [7.3.0](https://github.com/gemini-testing/looks-same/compare/v7.2.4...v7.3.0) (2021-02-03)
+
+
+### Features
+
+* add ability to compare screens by buffers ([#75](https://github.com/gemini-testing/looks-same/issues/75)) ([039ab0e](https://github.com/gemini-testing/looks-same/commit/039ab0e5ac2b591a46565677a562d3b6898ba4c5))
+
+### [7.2.4](https://github.com/gemini-testing/looks-same/compare/v7.2.3...v7.2.4) (2020-11-13)
+
+### [7.2.3](https://github.com/gemini-testing/looks-same/compare/v7.2.2...v7.2.3) (2020-05-08)
+
+
+### Bug Fixes
+
+* **prepareOpts:** TypeError when opts is undefined ([#66](https://github.com/gemini-testing/looks-same/issues/66)) ([c6ea6c2](https://github.com/gemini-testing/looks-same/commit/c6ea6c2de99a82e1cf798264e87c3d057f1ae32f))
+
+### [7.2.2](https://github.com/gemini-testing/looks-same/compare/v7.2.1...v7.2.2) (2019-10-28)
+
+
+### Bug Fixes
+
+* unknown file path in parse png error ([15898d4](https://github.com/gemini-testing/looks-same/commit/15898d4832d7f7ddbf50eab1704ec9bcd093c394))
+
+## 4.1.0 - 2018-12-05
+
+* add ability to ignore antialiasing and caret in "createDiff" method
+* add typescript types
+
+## 4.0.0 - 2018-09-11
+
+* Update nodejs to 6 version
+* Add ability to make ignore antialiasing less strict
+
+## 3.3.0 - 2017-12-26
+
+* Add `getDiffArea` method
+
 ## 3.2.0 - 2017-01-18
 
 * Add ability to ignore caret when it is crossing with text

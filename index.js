@@ -3,100 +3,16 @@
 const _ = require('lodash');
 const parseColor = require('parse-color');
 const colorDiff = require('color-diff');
-const png = require('./lib/png');
+const png = require('./lib/png-image');
 const areColorsSame = require('./lib/same-colors');
 const AntialiasingComparator = require('./lib/antialiasing-comparator');
 const IgnoreCaretComparator = require('./lib/ignore-caret-comparator');
+const DiffArea = require('./lib/diff-area');
+const utils = require('./lib/utils');
+const {JND} = require('./lib/constants');
 
-const JND = 2.3; //Just noticable difference
-                //if ciede2000 >= JND then colors
-                //difference is noticable by human eye
-
-const readPair = (first, second, callback) => {
-    const src = {first, second};
-    const result = {first: null, second: null};
-
-    let read = 0;
-    let failed = false;
-
-    ['first', 'second'].forEach((key) => {
-        const source = src[key];
-        const readFunc = Buffer.isBuffer(source) ? png.fromBuffer : png.fromFile;
-
-        readFunc(source, (error, png) => {
-            if (failed) {
-                return;
-            }
-
-            if (error) {
-                failed = true;
-                return callback(error, null);
-            }
-
-            result[key] = png;
-            read++;
-
-            if (read === 2) {
-                callback(null, result);
-            }
-        });
-    });
-};
-
-const everyPixelPair = (png1, png2, predicate, endCallback) => {
-    const width = Math.min(png1.width, png2.width);
-    const height = Math.min(png1.height, png2.height);
-
-    const processRow = (y) => {
-        setImmediate(() => {
-            for (let x = 0; x < width; x++) {
-                const color1 = png1.getPixel(x, y);
-                const color2 = png2.getPixel(x, y);
-
-                const result = predicate({
-                    color1, color2,
-                    png1, png2,
-                    x, y,
-                    width, height
-                });
-
-                if (!result) {
-                    return endCallback(false);
-                }
-            }
-            y++;
-
-            if (y < height) {
-                processRow(y);
-            } else {
-                endCallback(true);
-            }
-        });
-    };
-
-    processRow(0);
-}
-
-const arePNGsLookSame = (png1, png2, opts, callback) => {
-    if (png1.width !== png2.width || png1.height !== png2.height) {
-        return process.nextTick(() => callback(false));
-    }
-
-    let comparator = opts.strict ? areColorsSame : makeCIEDE2000Comparator(opts.tolerance);
-
-    if (opts.ignoreAntialiasing) {
-        comparator = makeAntialiasingComparator(comparator, png1, png2);
-    }
-
-    if (opts.ignoreCaret) {
-        comparator = makeNoCaretColorComparator(comparator, opts.pixelRatio);
-    }
-
-    everyPixelPair(png1, png2, comparator, callback);
-};
-
-const makeAntialiasingComparator = (comparator, png1, png2) => {
-    const antialiasingComparator = new AntialiasingComparator(comparator, png1, png2);
+const makeAntialiasingComparator = (comparator, png1, png2, opts) => {
+    const antialiasingComparator = new AntialiasingComparator(comparator, png1, png2, opts);
     return (data) => antialiasingComparator.compare(data);
 };
 
@@ -117,6 +33,20 @@ function makeCIEDE2000Comparator(tolerance) {
         return colorDiff.diff(lab1, lab2) < tolerance;
     };
 }
+
+const createComparator = (png1, png2, opts) => {
+    let comparator = opts.strict ? areColorsSame : makeCIEDE2000Comparator(opts.tolerance);
+
+    if (opts.ignoreAntialiasing) {
+        comparator = makeAntialiasingComparator(comparator, png1, png2, opts);
+    }
+
+    if (opts.ignoreCaret) {
+        comparator = makeNoCaretColorComparator(comparator, opts.pixelRatio);
+    }
+
+    return comparator;
+};
 
 const iterateRect = (width, height, callback, endCallback) => {
     const processRow = (y) => {
@@ -156,7 +86,7 @@ const buildDiffImage = (png1, png2, options, callback) => {
         const color1 = png1.getPixel(x, y);
         const color2 = png2.getPixel(x, y);
 
-        if (!options.comparator({color1, color2})) {
+        if (!options.comparator({color1, color2, png1, png2, x, y, width, height})) {
             result.setPixel(x, y, highlightColor);
         } else {
             result.setPixel(x, y, color1, alphaLevel);
@@ -165,7 +95,7 @@ const buildDiffImage = (png1, png2, options, callback) => {
 };
 
 const parseColorString = (str) => {
-    const parsed = parseColor(str);
+    const parsed = parseColor(str || '#ff00ff');
 
     return {
         R: parsed.rgb[0],
@@ -186,49 +116,132 @@ const getToleranceFromOpts = (opts) => {
     return opts.tolerance;
 };
 
-module.exports = exports = function looksSame(reference, image, opts, callback) {
+const prepareOpts = (opts) => {
+    opts = opts || {};
+    opts.tolerance = getToleranceFromOpts(opts);
+
+    return _.defaults(opts, {
+        ignoreCaret: true,
+        ignoreAntialiasing: true,
+        antialiasingTolerance: 0
+    });
+};
+
+const getMaxDiffBounds = (first, second) => {
+    const {x: left, y: top} = first.getActualCoord(0, 0);
+
+    return {
+        left,
+        top,
+        right: left + Math.max(first.width, second.width) - 1,
+        bottom: top + Math.max(first.height, second.height) - 1
+    };
+};
+
+module.exports = exports = async function looksSame(image1, image2, opts, callback) {
     if (!callback) {
         callback = opts;
         opts = {};
     }
 
-    opts.tolerance = getToleranceFromOpts(opts);
+    opts = prepareOpts(opts);
+    [image1, image2] = utils.formatImages(image1, image2);
 
-    if (opts.ignoreAntialiasing === undefined) {
-        opts.ignoreAntialiasing = true;
-    }
+    try {
+        const {first, second} = await utils.readPair(image1, image2, utils.readBufferCb);
+        const areBuffersEqual = utils.areBuffersEqual(first, second);
 
-    readPair(reference, image, (error, result) => {
-        if (error) {
-            return callback(error, null);
+        const refImg = {size: {width: first.width, height: first.height}};
+        const metaInfo = {refImg};
+
+        if (areBuffersEqual) {
+            const diffBounds = (new DiffArea()).area;
+            process.nextTick(() => callback(null, {equal: true, metaInfo, diffBounds, diffClusters: [diffBounds]}));
+
+            return;
         }
 
-        arePNGsLookSame(result.first, result.second, opts, (result) => callback(null, result));
-    });
+        if (first.width !== second.width || first.height !== second.height) {
+            const diffBounds = getMaxDiffBounds(first, second);
+            process.nextTick(() => callback(null, {equal: false, metaInfo, diffBounds, diffClusters: [diffBounds]}));
+
+            return;
+        }
+
+        const {first: png1, second: png2} = await utils.readPair(
+            {...image1, source: first.buffer},
+            {...image2, source: second.buffer},
+            utils.readPngCb
+        );
+
+        const comparator = createComparator(png1, png2, opts);
+        const {stopOnFirstFail, shouldCluster, clustersSize} = opts;
+
+        utils.getDiffPixelsCoords(png1, png2, comparator, {stopOnFirstFail, shouldCluster, clustersSize}, ({diffArea, diffClusters}) => {
+            const diffBounds = diffArea.area;
+            const equal = diffArea.isEmpty();
+
+            callback(null, {equal, metaInfo, diffBounds, diffClusters});
+        });
+    } catch (err) {
+        return callback(err);
+    }
+};
+
+exports.getDiffArea = function(image1, image2, opts, callback) {
+    if (!callback) {
+        callback = opts;
+        opts = {};
+    }
+
+    opts = prepareOpts(opts);
+    [image1, image2] = utils.formatImages(image1, image2);
+
+    utils
+        .readPair(image1, image2)
+        .then(({first, second}) => {
+            if (first.width !== second.width || first.height !== second.height) {
+                return process.nextTick(() => callback(null, getMaxDiffBounds(first, second)));
+            }
+
+            const comparator = createComparator(first, second, opts);
+
+            utils.getDiffPixelsCoords(first, second, comparator, opts, ({diffArea}) => {
+                if (diffArea.isEmpty()) {
+                    return callback(null, null);
+                }
+
+                callback(null, diffArea.area);
+            });
+        })
+        .catch(error => {
+            callback(error);
+        });
 };
 
 exports.createDiff = function saveDiff(opts, callback) {
-    const tolerance = getToleranceFromOpts(opts);
+    opts = prepareOpts(opts);
 
-    readPair(opts.reference, opts.current, (error, result) => {
-        if (error) {
-            return callback(error);
-        }
-
-        const diffOptions = {
-            highlightColor: parseColorString(opts.highlightColor),
-            comparator: opts.strict ? areColorsSame : makeCIEDE2000Comparator(tolerance),
-            transparency: opts.transparency
-        };
-
-        buildDiffImage(result.first, result.second, diffOptions, (result) => {
-            if (opts.diff === undefined) {
-                result.createBuffer(callback);
-            } else {
-                result.save(opts.diff, callback);
-            }
+    const [image1, image2] = utils.formatImages(opts.reference, opts.current);
+    utils
+        .readPair(image1, image2)
+        .then(({first, second}) => {
+            const diffOptions = {
+                highlightColor: parseColorString(opts.highlightColor),
+                comparator: createComparator(first, second, opts),
+                transparency: opts.transparency
+            };
+            buildDiffImage(first, second, diffOptions, (result) => {
+                if (opts.diff === undefined) {
+                    result.createBuffer(callback);
+                } else {
+                    result.save(opts.diff, callback);
+                }
+            });
+        })
+        .catch(error => {
+            callback(error);
         });
-    });
 };
 
 exports.colors = (color1, color2, opts) => {
